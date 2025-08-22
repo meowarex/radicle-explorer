@@ -1,7 +1,41 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/usr/bin/env node
 
-echo "Copying katex assets into bundle directory"
+import { mkdir, copyFile, readdir } from "node:fs/promises";
+import path from "node:path";
 
-cp -r node_modules/katex/dist/katex.min.css public/katex.min.css
-cp -r node_modules/katex/dist/fonts/* public/fonts/
+async function ensureDir(dir) {
+  await mkdir(dir, { recursive: true });
+}
+
+async function copyDirFiles(srcDir, dstDir) {
+  const entries = await readdir(srcDir, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (entry.isFile()) {
+        await copyFile(path.join(srcDir, entry.name), path.join(dstDir, entry.name));
+      }
+    }),
+  );
+}
+
+async function main() {
+  // eslint-disable-next-line no-console
+  console.log("Copying katex assets into bundle directory");
+
+  const projectRoot = process.cwd();
+  const katexDist = path.join(projectRoot, "node_modules", "katex", "dist");
+  const publicDir = path.join(projectRoot, "public");
+  const publicFonts = path.join(publicDir, "fonts");
+
+  await ensureDir(publicDir);
+  await ensureDir(publicFonts);
+
+  await copyFile(path.join(katexDist, "katex.min.css"), path.join(publicDir, "katex.min.css"));
+  await copyDirFiles(path.join(katexDist, "fonts"), publicFonts);
+}
+
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error("Failed to copy KaTeX assets:", err);
+  process.exit(1);
+});

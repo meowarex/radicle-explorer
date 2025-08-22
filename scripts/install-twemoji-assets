@@ -1,9 +1,75 @@
-#!/usr/bin/env bash
-set -Eeou pipefail
+#!/usr/bin/env node
 
-version="$(node -e 'console.log(require("twemoji/package.json").version)')"
+/**
+ * Install Twemoji SVG assets without relying on curl or system tar.
+ *
+ * Strategy:
+ * 1) Ensure target directory exists: public/twemoji
+ * 2) Download the GitHub tarball with Node's https, following redirects
+ * 3) Stream-extract only "assets/svg" into public/twemoji using the npm "tar" package
+ */
 
-echo "Installing Twemoji SVG assets v${version}"
+import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import https from "node:https";
+import { pipeline } from "node:stream/promises";
+const require = createRequire(import.meta.url);
+const tar = require("tar");
+const { version } = require("twemoji/package.json");
 
-curl -sSL "https://github.com/twitter/twemoji/archive/refs/tags/v${version}.tar.gz" \
-  | tar -x -z -C public/twemoji/ --strip-components=3 "twemoji-${version}/assets/svg"
+async function ensureDir(directoryPath) {
+  await mkdir(directoryPath, { recursive: true });
+}
+
+function fetchWithRedirects(url, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    const request = (currentUrl, redirectsRemaining) => {
+      const req = https.get(currentUrl, (res) => {
+        const status = res.statusCode || 0;
+        const location = res.headers.location;
+        if (status >= 300 && status < 400 && location && redirectsRemaining > 0) {
+          res.resume();
+          const nextUrl = new URL(location, currentUrl).toString();
+          request(nextUrl, redirectsRemaining - 1);
+          return;
+        }
+        if (status < 200 || status >= 300) {
+          reject(new Error(`HTTP ${status} while fetching ${currentUrl}`));
+          return;
+        }
+        resolve(res);
+      });
+      req.on("error", reject);
+    };
+    request(url, maxRedirects);
+  });
+}
+
+async function main() {
+  const outputDir = path.resolve("public", "twemoji");
+  await ensureDir(outputDir);
+
+  const archiveUrl = `https://github.com/twitter/twemoji/archive/refs/tags/v${version}.tar.gz`;
+  // We only want to extract files under: twemoji-${version}/assets/svg/*
+  // Use strip=3 to drop: [twemoji-${version}, assets, svg]
+  const tarExtract = tar.x({
+    cwd: outputDir,
+    gzip: true,
+    strip: 3,
+    filter: (entryPath) => entryPath.includes(`/assets/svg/`),
+  });
+
+  // Fetch and stream into tar extractor
+  const res = await fetchWithRedirects(archiveUrl);
+  await pipeline(res, tarExtract);
+
+  // eslint-disable-next-line no-console
+  console.log(`Installed Twemoji SVG assets v${version} into ${outputDir}`);
+}
+
+main().catch((error) => {
+  // eslint-disable-next-line no-console
+  console.error("Failed to install Twemoji assets:", error);
+  process.exit(1);
+});
